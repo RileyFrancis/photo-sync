@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photo Sync</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect x='2' y='5' width='20' height='15' rx='3' fill='%233b82f6'/><circle cx='12' cy='12.5' r='4' fill='white'/></svg>">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Photo Sync</div>
+    <select id="device-select" class="device-select" hidden aria-label="Phone backup"></select>
+    <div id="phone-pill" class="pill">Checking for phone…</div>
+    <div class="spacer"></div>
+    <div id="sync-summary" class="sync-summary"></div>
+    <button id="verify-btn" class="btn" title="Re-read every backed-up file from the phone and repair damaged copies">Verify backup</button>
+    <button id="push-btn" class="btn">Push to server</button>
+    <button id="sync-btn" class="btn primary">Sync phone</button>
+  </header>
+
+  <section id="job-panel" class="job-panel" hidden>
+    <div class="job-head">
+      <strong id="job-title">Syncing</strong>
+      <span id="job-stage" class="muted"></span>
+      <div class="spacer"></div>
+      <button id="cancel-btn" class="btn small">Stop</button>
+      <button id="dismiss-btn" class="btn small" hidden>Dismiss</button>
+    </div>
+    <div id="job-progress" class="progress" hidden>
+      <div class="bar"><div id="job-bar-fill" class="fill"></div></div>
+      <div id="job-numbers" class="numbers"></div>
+    </div>
+    <ul id="job-log" class="log"></ul>
+  </section>
+
+  <section class="toolbar">
+    <div id="view-tabs" class="tabs" role="tablist" aria-label="View">
+      <button data-view="grid" class="active">Grid</button>
+      <button data-view="map">Map</button>
+    </div>
+    <div id="kind-tabs" class="tabs" role="tablist">
+      <button data-kind="" class="active">All</button>
+      <button data-kind="photo">Photos</button>
+      <button data-kind="video">Videos</button>
+      <button data-kind="live">Live</button>
+      <button data-kind="screenshot">Screenshots</button>
+    </div>
+    <label class="field">From <input id="from" type="date"></label>
+    <label class="field">To <input id="to" type="date"></label>
+    <select id="ext" aria-label="File type"><option value="">All file types</option></select>
+    <select id="camera" aria-label="Camera"><option value="">All cameras</option></select>
+    <select id="sort" aria-label="Sort">
+      <option value="taken_desc">Newest first</option>
+      <option value="taken_asc">Oldest first</option>
+      <option value="name_asc">Name A–Z</option>
+      <option value="name_desc">Name Z–A</option>
+      <option value="size_desc">Largest first</option>
+      <option value="size_asc">Smallest first</option>
+      <option value="duration_desc">Longest videos</option>
+    </select>
+    <label class="check"><input id="live-clips" type="checkbox"> Live Photo clips</label>
+    <button id="clear-btn" class="btn small ghost">Clear</button>
+  </section>
+
+  <div id="indexing" class="banner" hidden></div>
+  <div id="result-count" class="result-count"></div>
+  <main id="gallery" class="gallery"></main>
+  <div id="sentinel" class="sentinel"></div>
+  <div id="empty" class="empty" hidden></div>
+
+  <section id="map-view" class="map-view" hidden>
+    <div id="map" class="map"></div>
+    <aside id="place-panel" class="place-panel" hidden>
+      <div class="place-head">
+        <strong id="place-title"></strong>
+        <div class="spacer"></div>
+        <button id="place-close" class="btn small ghost" aria-label="Close">✕</button>
+      </div>
+      <div id="place-note" class="muted place-note"></div>
+      <div class="place-scroll"><div id="place-grid" class="grid place-grid"></div></div>
+    </aside>
+  </section>
+
+  <div id="viewer" class="viewer" hidden>
+    <button class="v-close" id="v-close" aria-label="Close">✕</button>
+    <button class="v-nav v-prev" id="v-prev" aria-label="Previous">‹</button>
+    <div class="v-stage" id="v-stage"></div>
+    <button class="v-nav v-next" id="v-next" aria-label="Next">›</button>
+    <aside class="v-info" id="v-info"></aside>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.js"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
