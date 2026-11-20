@@ -32,11 +32,15 @@ MAX_RSYNC_ATTEMPTS = 5
 RETRY_DELAY_SECONDS = 5
 MAX_MOUNT_ATTEMPTS = 3
 MOUNT_RETRY_DELAY_SECONDS = 2
-BACKUPS_ROOT = os.path.expanduser("~/iphone-backups")
+# Where phone backups live; the hosted gallery on manifold points this elsewhere (see server.py).
+BACKUPS_ROOT = os.environ.get("PHOTOSYNC_LIBRARY") or os.path.expanduser("~/iphone-backups")
 IPHONE_DIR = os.path.expanduser("~/iphone")
 # rsync destination as "ssh-host:path"; the phone's folder goes inside it. A relative path is
 # relative to the remote user's home directory. The host is an alias from ~/.ssh/config.
-DEFAULT_REMOTE = "manifold:iphone-backups"
+# /srv/photo-sync/library is what the hosted gallery on manifold shows.
+DEFAULT_REMOTE = "manifold:/srv/photo-sync/library"
+# Not pushed: Verify's set-aside damaged copies are only useful locally, and can be large.
+PUSH_EXCLUDES = ["--exclude=/.sync-meta/replaced/"]
 SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=15"
 META_DIR_NAME = ".sync-meta"
 META_FORMAT_VERSION = 1
@@ -127,7 +131,10 @@ def read_json(path):
 # ---------------------------------------------------------------- the phone
 
 def connected_udids():
-    out = subprocess.run(["idevice_id", "-l"], capture_output=True, text=True).stdout
+    try:
+        out = subprocess.run(["idevice_id", "-l"], capture_output=True, text=True).stdout
+    except FileNotFoundError:  # libimobiledevice isn't installed (e.g. on the server)
+        return []
     return sorted(set(out.split()))
 
 
@@ -578,11 +585,12 @@ def push_to_remote(phone_dir, udid, remote, record, save, reporter, cancel=None,
         if result.returncode != 0:
             raise RuntimeError(f"Can't reach {host}: {result.stderr.strip() or 'ssh failed'}")
 
-        res = run_rsync(["-e", SSH_COMMAND, f"{phone_dir}/", f"{target}/"], reporter, "push", cancel=cancel)
+        res = run_rsync([*PUSH_EXCLUDES, "--chmod=D755,F644", "-e", SSH_COMMAND, f"{phone_dir}/", f"{target}/"],
+                        reporter, "push", cancel=cancel)
         info["files_pushed"] = res.files_done
         info["bytes_pushed"] = res.bytes_done
         if res.returncode == 0 and force_paths:
-            forced = run_rsync(["-I", "-e", SSH_COMMAND, f"{phone_dir}/", f"{target}/"], reporter, "push",
+            forced = run_rsync(["-I", "--chmod=D755,F644", "-e", SSH_COMMAND, f"{phone_dir}/", f"{target}/"], reporter, "push",
                                file_list=sorted(force_paths), cancel=cancel)
             res.returncode = forced.returncode
             res.other_errors += forced.other_errors

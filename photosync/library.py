@@ -20,7 +20,7 @@ from . import core
 
 pillow_heif.register_heif_opener()
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
-CACHE_ROOT = os.path.expanduser("~/.cache/photo-sync")
+CACHE_ROOT = os.environ.get("PHOTOSYNC_CACHE") or os.path.expanduser("~/.cache/photo-sync")
 INDEX_VERSION = 2  # bump to re-read metadata for every file (2: GPS coordinates)
 
 KINDS = {

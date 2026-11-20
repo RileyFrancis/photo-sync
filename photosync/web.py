@@ -4,6 +4,7 @@ Run with:  .venv/bin/python app.py   then open http://localhost:8765
 """
 
 import argparse
+import functools
 import os
 import threading
 import time
@@ -16,6 +17,18 @@ from .library import SORTS, Library
 
 app = Flask(__name__)
 REMOTE = core.DEFAULT_REMOTE
+# On the server (see server.py) the app is a gallery only: there's no phone to sync from.
+HOSTED = os.environ.get("PHOTOSYNC_HOSTED") == "1"
+
+
+def laptop_only(view):
+    """Phone sync, verify and push need the phone plugged into this machine; not on the server."""
+    @functools.wraps(view)
+    def wrapper(*args, **kwargs):
+        if HOSTED:
+            return jsonify(error="Syncing happens on the laptop the phone is plugged into."), 403
+        return view(*args, **kwargs)
+    return wrapper
 
 
 # ---------------------------------------------------------------- background jobs
@@ -129,6 +142,8 @@ _device_names = {}
 
 def phone_status():
     """The connected phone, checked at most every 3 seconds."""
+    if HOSTED:
+        return None
     if time.monotonic() - _phone_cache["at"] < 3:
         return _phone_cache["value"]
     udids = core.connected_udids()
@@ -148,7 +163,7 @@ def phone_status():
 @app.get("/")
 def index():
     refresh_libraries()  # pick up changes made outside the app, e.g. a verify run from the terminal
-    return render_template("index.html", sorts=list(SORTS))
+    return render_template("index.html", sorts=list(SORTS), hosted=HOSTED)
 
 
 @app.get("/api/status")
@@ -161,6 +176,7 @@ def status():
 
 
 @app.post("/api/sync")
+@laptop_only
 def start_sync():
     if not jobs.start("sync", sync_job):
         return jsonify(error="A sync is already running"), 409
@@ -168,6 +184,7 @@ def start_sync():
 
 
 @app.post("/api/verify")
+@laptop_only
 def start_verify():
     if not jobs.start("verify", verify_job):
         return jsonify(error="A sync is already running"), 409
@@ -175,6 +192,7 @@ def start_verify():
 
 
 @app.post("/api/push/<udid>")
+@laptop_only
 def start_push(udid):
     if not jobs.start("push", push_job(udid)):
         return jsonify(error="A sync is already running"), 409
@@ -182,6 +200,7 @@ def start_push(udid):
 
 
 @app.post("/api/cancel")
+@laptop_only
 def cancel():
     jobs.cancel.set()
     return jsonify(ok=True)

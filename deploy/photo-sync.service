@@ -1,0 +1,30 @@
+# Hosted photo backup web app. Installed to /etc/systemd/system/ by deploy/setup.sh.
+[Unit]
+Description=Photo backup web app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=photosync
+Group=photosync
+WorkingDirectory=/srv/photo-sync/app
+Environment=PHOTOSYNC_DATA=/srv/photo-sync/data
+# One process (the app keeps job and index state in memory), many threads; only Caddy talks to it.
+ExecStart=/srv/photo-sync/app/.venv/bin/gunicorn --bind 127.0.0.1:8765 --workers 1 --threads 16 --timeout 600 photosync.server:app
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the app can only write to its data folder.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/srv/photo-sync/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+# Caddy site config for the hosted photo backup. /etc/caddy/Caddyfile imports this file,
+# so it can be changed without root; apply with: sudo systemctl reload caddy
+#
+# Caddy gets and renews the HTTPS certificate on its own (Let's Encrypt, via ports 80/443).
+# No email is registered with Let's Encrypt, so nothing identifying is shared with them.
+
+frantierphotos.duckdns.org {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	# Temporary site-wide login until the app has its own accounts. The file holds lines of
+	# "username bcrypt-hash" (make a hash with: caddy hash-password). It lives outside the
+	# code folder so no password hash ends up in git.
+	basic_auth {
+		import /srv/photo-sync/site-logins.caddy
+	}
+
+	# The gallery app (gunicorn, deploy/photo-sync.service), only reachable through Caddy.
+	reverse_proxy 127.0.0.1:8765
+}
