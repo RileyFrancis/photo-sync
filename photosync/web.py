@@ -14,11 +14,21 @@ from flask import Flask, abort, jsonify, render_template, request, send_file
 
 from . import core
 from .library import SORTS, Library
+from .uploads import UploadError, Uploads
 
 app = Flask(__name__)
 REMOTE = core.DEFAULT_REMOTE
 # On the server (see server.py) the app is a gallery only: there's no phone to sync from.
 HOSTED = os.environ.get("PHOTOSYNC_HOSTED") == "1"
+
+
+@app.before_request
+def require_app_header():
+    """Browsers send a saved login with every request to this site, even ones another website
+    triggers. Requests that change something must carry this header, which other sites can't add
+    (doing so needs permission this app never grants), so they can't act on a user's behalf."""
+    if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("X-Photo-Sync") != "1":
+        return jsonify(error="Missing X-Photo-Sync header"), 403
 
 
 def laptop_only(view):
@@ -123,6 +133,17 @@ def library(udid):
         if udid not in _libraries:
             _libraries[udid] = Library(udid)
         return _libraries[udid]
+
+
+_uploads = {}
+
+
+def uploads(udid):
+    lib = library(udid)
+    with _libraries_lock:
+        if udid not in _uploads:
+            _uploads[udid] = Uploads(lib)
+        return _uploads[udid]
 
 
 def refresh_libraries():
@@ -230,6 +251,40 @@ def places(udid):
 def items(udid):
     ids = [int(x) for x in request.args.get("ids", "").split(",") if x.isdigit()][:500]
     return jsonify(items=library(udid).get_many(ids))
+
+
+@app.post("/api/<udid>/upload/start")
+def upload_start(udid):
+    d = request.get_json(force=True, silent=True) or {}
+    try:
+        return jsonify(uploads(udid).start(str(d.get("name", "")), int(d.get("size") or 0),
+                                           int(d.get("modified") or 0), str(d.get("fingerprint", ""))))
+    except (TypeError, ValueError):
+        return jsonify(error="Bad upload request"), 400
+    except UploadError as e:
+        return jsonify(error=str(e), **e.extra), e.status
+
+
+@app.put("/api/<udid>/upload/<upload_id>")
+def upload_chunk(udid, upload_id):
+    try:
+        return jsonify(uploads(udid).chunk(upload_id, request.args.get("offset", -1, type=int),
+                                           request.stream, request.content_length))
+    except UploadError as e:
+        return jsonify(error=str(e), **e.extra), e.status
+
+
+@app.post("/api/<udid>/upload/<upload_id>/finish")
+def upload_finish(udid, upload_id):
+    try:
+        return jsonify(uploads(udid).finish(upload_id))
+    except UploadError as e:
+        return jsonify(error=str(e), **e.extra), e.status
+
+
+@app.get("/api/<udid>/upload/info")
+def upload_info(udid):
+    return jsonify(uploads(udid).info())
 
 
 @app.get("/api/<udid>/facets")

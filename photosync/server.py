@@ -11,6 +11,7 @@ DATA = os.environ.get("PHOTOSYNC_DATA", "/srv/photo-sync/data")
 os.environ.setdefault("PHOTOSYNC_HOSTED", "1")
 os.environ.setdefault("PHOTOSYNC_LIBRARY", "/srv/photo-sync/library")
 os.environ.setdefault("PHOTOSYNC_CACHE", os.path.join(DATA, "cache"))
+os.environ.setdefault("PHOTOSYNC_UPLOADS", os.path.join(DATA, "uploads"))  # backups are read-only here
 
 from .web import app, refresh_libraries  # noqa: E402
 

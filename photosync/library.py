@@ -21,6 +21,10 @@ from . import core
 pillow_heif.register_heif_opener()
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 CACHE_ROOT = os.environ.get("PHOTOSYNC_CACHE") or os.path.expanduser("~/.cache/photo-sync")
+# Photos uploaded from a browser. On the server the backup folder is read-only to the app, so
+# uploads live in the app's data folder; elsewhere they go in the backup folder's Uploads/.
+UPLOADS_ROOT = os.environ.get("PHOTOSYNC_UPLOADS")
+UPLOADS_PREFIX = "Uploads/"   # indexed paths of uploaded files start with this
 INDEX_VERSION = 2  # bump to re-read metadata for every file (2: GPS coordinates)
 
 KINDS = {
@@ -165,6 +169,9 @@ class Library:
     def __init__(self, udid):
         self.udid = udid
         self.phone_dir = core.phone_dir_for(udid)
+        self.upload_dir = (os.path.join(UPLOADS_ROOT, udid) if UPLOADS_ROOT
+                           else os.path.join(self.phone_dir, UPLOADS_PREFIX.rstrip("/")))
+        self.refresh_again = False
         self.cache_dir = os.path.join(CACHE_ROOT, udid)
         for sub in ("thumbs", "view", "video"):
             os.makedirs(os.path.join(self.cache_dir, sub), exist_ok=True)
@@ -199,10 +206,15 @@ class Library:
         """Bring the index up to date with the backup folder. Runs in the caller's thread;
         returns immediately if another refresh is already running."""
         if not self.index_lock.acquire(blocking=False):
+            self.refresh_again = True  # files arrived mid-refresh; the running one goes round again
             return
         try:
             self.indexing.update(running=True, done=0, total=0, error=None)
-            self._refresh()
+            while True:
+                self.refresh_again = False
+                self._refresh()
+                if not self.refresh_again:
+                    break
         except Exception as e:
             self.indexing["error"] = str(e)
             raise
@@ -212,14 +224,16 @@ class Library:
 
     def _refresh(self):
         on_disk = {}
-        for root, _, files in os.walk(os.path.join(self.phone_dir, "DCIM")):
-            for name in files:
-                ext = os.path.splitext(name)[1].upper()
-                if name.startswith(".") or ext not in KINDS:
-                    continue  # rsync temp files, .AAE edit sidecars, etc.
-                full = os.path.join(root, name)
-                st = os.stat(full)
-                on_disk[os.path.relpath(full, self.phone_dir)] = (st.st_size, st.st_mtime, st.st_ino)
+        for base, prefix in ((os.path.join(self.phone_dir, "DCIM"), "DCIM/"), (self.upload_dir, UPLOADS_PREFIX)):
+            for root, dirs, files in os.walk(base):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]  # e.g. unfinished uploads
+                for name in files:
+                    ext = os.path.splitext(name)[1].upper()
+                    if name.startswith(".") or ext not in KINDS:
+                        continue  # rsync temp files, .AAE edit sidecars, etc.
+                    full = os.path.join(root, name)
+                    st = os.stat(full)
+                    on_disk[prefix + os.path.relpath(full, base)] = (st.st_size, st.st_mtime, st.st_ino)
 
         with closing(self.db()) as db:
             known = {r["path"]: r for r in db.execute("SELECT id, path, size, mtime, inode, index_version FROM media")}
@@ -236,7 +250,7 @@ class Library:
                 size, mtime, inode = on_disk[path]
                 ext = os.path.splitext(path)[1].upper()
                 kind = KINDS[ext]
-                meta = read_metadata(os.path.join(self.phone_dir, path), kind, mtime)
+                meta = read_metadata(self.path_on_disk(path), kind, mtime)
                 row = {"path": path, "name": os.path.basename(path), "folder": os.path.dirname(path),
                        "ext": ext, "kind": kind, "size": size, "mtime": mtime, "inode": inode,
                        "width": None, "height": None, "duration": None, "codec": None, "camera": None,
@@ -349,7 +363,24 @@ class Library:
         return dict(row) if row else None
 
     def full_path(self, item):
-        return os.path.join(self.phone_dir, item["path"])
+        return self.path_on_disk(item["path"])
+
+    def path_on_disk(self, path):
+        if path.startswith(UPLOADS_PREFIX):
+            return os.path.join(self.upload_dir, path[len(UPLOADS_PREFIX):])
+        return os.path.join(self.phone_dir, path)
+
+    def paths_with_size(self, size):
+        """Files of exactly this size: indexed ones plus uploads not indexed yet."""
+        with closing(self.db()) as db:
+            paths = {self.path_on_disk(r[0]) for r in db.execute("SELECT path FROM media WHERE size = ?", (size,))}
+        for root, dirs, files in os.walk(self.upload_dir):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]  # skip .incoming (unfinished uploads)
+            for name in files:
+                full = os.path.join(root, name)
+                if not name.startswith(".") and os.path.getsize(full) == size:
+                    paths.add(full)
+        return paths
 
     # ------------------------------------------------ derived files
 

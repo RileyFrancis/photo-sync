@@ -5,11 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Photo Sync</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect x='2' y='5' width='20' height='15' rx='3' fill='%233b82f6'/><circle cx='12' cy='12.5' r='4' fill='white'/></svg>">
+  {# Icon and name used when the site is added to an iPhone's home screen. #}
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon-180.png') }}">
+  <meta name="apple-mobile-web-app-title" content="Photos">
+  <meta name="theme-color" content="#2563eb">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body data-hosted="{{ '1' if hosted else '' }}">
   <header class="topbar">
     <div class="brand">Photo Sync</div>
     <select id="device-select" class="device-select" hidden aria-label="Phone backup"></select>
@@ -19,8 +23,26 @@
     <div id="sync-summary" class="sync-summary" {% if hosted %}hidden{% endif %}></div>
     <button id="verify-btn" class="btn" title="Re-read every backed-up file from the phone and repair damaged copies" {% if hosted %}hidden{% endif %}>Verify backup</button>
     <button id="push-btn" class="btn" {% if hosted %}hidden{% endif %}>Push to server</button>
-    <button id="sync-btn" class="btn primary" {% if hosted %}hidden{% endif %}>Sync phone</button>
+    <button id="sync-btn" class="btn {% if not hosted %}primary{% endif %}" {% if hosted %}hidden{% endif %}>Sync phone</button>
+    <span id="upload-last" class="upload-last muted"></span>
+    <button id="upload-btn" class="btn {% if hosted %}primary{% endif %} upload-btn" disabled>Back up photos</button>
+    <input id="upload-input" type="file" multiple accept="image/*,video/*" hidden>
   </header>
+
+  <section id="upload-panel" class="job-panel upload-panel" hidden>
+    <div class="job-head">
+      <strong id="upload-title">Backing up</strong>
+      <div class="spacer"></div>
+      <button id="upload-stop" class="btn small">Stop</button>
+      <button id="upload-dismiss" class="btn small" hidden>Done</button>
+    </div>
+    <div class="progress">
+      <div class="bar"><div id="upload-fill" class="fill"></div></div>
+      <div id="upload-numbers" class="numbers"></div>
+    </div>
+    <div id="upload-note" class="upload-note"></div>
+    <ul id="upload-log" class="log"></ul>
+  </section>
 
   <section id="job-panel" class="job-panel" hidden>
     <div class="job-head">
@@ -38,32 +60,40 @@
   </section>
 
   <section class="toolbar">
-    <div id="view-tabs" class="tabs" role="tablist" aria-label="View">
-      <button data-view="grid" class="active">Grid</button>
-      <button data-view="map">Map</button>
+    <div class="toolbar-main">
+      <div id="view-tabs" class="tabs" role="tablist" aria-label="View">
+        <button data-view="grid" class="active">Grid</button>
+        <button data-view="map">Map</button>
+      </div>
+      <div class="tabs-scroll">
+      <div id="kind-tabs" class="tabs kind-tabs" role="tablist">
+        <button data-kind="" class="active">All</button>
+        <button data-kind="photo">Photos</button>
+        <button data-kind="video">Videos</button>
+        <button data-kind="live">Live</button>
+        <button data-kind="screenshot">Screenshots</button>
+      </div>
+      </div>
+      {# Phones only: the filters below fold away behind this button. #}
+      <button id="filters-btn" class="btn small filters-btn" aria-expanded="false" aria-controls="filters">Filters</button>
     </div>
-    <div id="kind-tabs" class="tabs" role="tablist">
-      <button data-kind="" class="active">All</button>
-      <button data-kind="photo">Photos</button>
-      <button data-kind="video">Videos</button>
-      <button data-kind="live">Live</button>
-      <button data-kind="screenshot">Screenshots</button>
+    <div id="filters" class="filters">
+      <label class="field">From <input id="from" type="date"></label>
+      <label class="field">To <input id="to" type="date"></label>
+      <select id="ext" aria-label="File type"><option value="">All file types</option></select>
+      <select id="camera" aria-label="Camera"><option value="">All cameras</option></select>
+      <select id="sort" aria-label="Sort">
+        <option value="taken_desc">Newest first</option>
+        <option value="taken_asc">Oldest first</option>
+        <option value="name_asc">Name A–Z</option>
+        <option value="name_desc">Name Z–A</option>
+        <option value="size_desc">Largest first</option>
+        <option value="size_asc">Smallest first</option>
+        <option value="duration_desc">Longest videos</option>
+      </select>
+      <label class="check"><input id="live-clips" type="checkbox"> Live Photo clips</label>
+      <button id="clear-btn" class="btn small ghost">Clear</button>
     </div>
-    <label class="field">From <input id="from" type="date"></label>
-    <label class="field">To <input id="to" type="date"></label>
-    <select id="ext" aria-label="File type"><option value="">All file types</option></select>
-    <select id="camera" aria-label="Camera"><option value="">All cameras</option></select>
-    <select id="sort" aria-label="Sort">
-      <option value="taken_desc">Newest first</option>
-      <option value="taken_asc">Oldest first</option>
-      <option value="name_asc">Name A–Z</option>
-      <option value="name_desc">Name Z–A</option>
-      <option value="size_desc">Largest first</option>
-      <option value="size_asc">Smallest first</option>
-      <option value="duration_desc">Longest videos</option>
-    </select>
-    <label class="check"><input id="live-clips" type="checkbox"> Live Photo clips</label>
-    <button id="clear-btn" class="btn small ghost">Clear</button>
   </section>
 
   <div id="indexing" class="banner" hidden></div>
@@ -87,6 +117,7 @@
 
   <div id="viewer" class="viewer" hidden>
     <button class="v-close" id="v-close" aria-label="Close">✕</button>
+    <button class="v-info-btn" id="v-info-btn" aria-label="Show details">Info</button>
     <button class="v-nav v-prev" id="v-prev" aria-label="Previous">‹</button>
     <div class="v-stage" id="v-stage"></div>
     <button class="v-nav v-next" id="v-next" aria-label="Next">›</button>
