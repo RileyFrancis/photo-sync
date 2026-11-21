@@ -1,25 +1,23 @@
-"""Local web app: sync the phone, push to the server, and browse the backup as a gallery.
+"""The photo gallery web app, plus the upload API that phones' photos arrive through.
 
-Run with:  .venv/bin/python app.py   then open http://localhost:8765
+Hosted on manifold (see server.py and deploy/). For local testing:
+    .venv/bin/python app.py   then open http://localhost:8765
+Photos are sent here by the desktop app (desktop/) or picked in the browser ("Back up photos").
 """
 
 import argparse
-import functools
 import os
+import re
 import threading
-import time
 import traceback
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
 from . import core
-from .library import SORTS, Library
+from .library import SORTS, UPLOADS_ROOT, Library, upload_dir_for
 from .uploads import UploadError, Uploads
 
 app = Flask(__name__)
-REMOTE = core.DEFAULT_REMOTE
-# On the server (see server.py) the app is a gallery only: there's no phone to sync from.
-HOSTED = os.environ.get("PHOTOSYNC_HOSTED") == "1"
 
 
 @app.before_request
@@ -31,95 +29,6 @@ def require_app_header():
         return jsonify(error="Missing X-Photo-Sync header"), 403
 
 
-def laptop_only(view):
-    """Phone sync, verify and push need the phone plugged into this machine; not on the server."""
-    @functools.wraps(view)
-    def wrapper(*args, **kwargs):
-        if HOSTED:
-            return jsonify(error="Syncing happens on the laptop the phone is plugged into."), 403
-        return view(*args, **kwargs)
-    return wrapper
-
-
-# ---------------------------------------------------------------- background jobs
-
-class WebReporter(core.Reporter):
-    """Keeps the latest progress of the running job for the browser to poll."""
-
-    def __init__(self, job):
-        self.job = job
-
-    def stage(self, text):
-        self.job["stage"] = text
-
-    def progress(self, p):
-        self.job["progress"] = p
-        self.job["stage"] = ""
-
-    def say(self, text, kind="info"):
-        self.job["log"].append({"time": time.time(), "text": text, "kind": kind})
-        self.job["log"] = self.job["log"][-200:]
-
-
-class Jobs:
-    """At most one sync or push runs at a time."""
-
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.cancel = threading.Event()
-        self.current = None
-
-    def start(self, kind, fn):
-        with self.lock:
-            if self.current and self.current["running"]:
-                return False
-            self.cancel.clear()
-            job = {"kind": kind, "running": True, "stage": "Starting…", "progress": None, "log": [],
-                   "started_at": time.time(), "finished_at": None, "error": None, "result": None}
-            self.current = job
-
-        def run():
-            reporter = WebReporter(job)
-            try:
-                job["result"] = fn(reporter, self.cancel)
-            except KeyboardInterrupt:
-                job["error"] = "Stopped. Files copied so far are kept; sync again to continue."
-            except Exception as e:
-                job["error"] = str(e)
-                if not isinstance(e, RuntimeError):
-                    traceback.print_exc()
-            finally:
-                job.update(running=False, stage="", progress=None, finished_at=time.time())
-                refresh_libraries()
-
-        threading.Thread(target=run, daemon=True).start()
-        return True
-
-
-jobs = Jobs()
-
-
-def sync_job(reporter, cancel):
-    record, _ = core.run_sync(reporter, remote=REMOTE, cancel=cancel)
-    return {"udid": record["device"]["udid"], "status": record["status"],
-            "copied": len(record["copied"]), "failed": len(record["failed"]),
-            "remote": (record.get("remote") or {}).get("status")}
-
-
-def verify_job(reporter, cancel):
-    record, _ = core.run_verify(reporter, remote=REMOTE, cancel=cancel)
-    return {"udid": record["device"]["udid"], "status": record["status"],
-            "mismatched": len(record["mismatched"]), "repaired": len(record["repaired"]),
-            "remote": (record.get("remote") or {}).get("status")}
-
-
-def push_job(udid):
-    def run(reporter, cancel):
-        record, _ = core.run_push(reporter, udid, REMOTE, cancel=cancel)
-        return {"udid": udid, "status": record["status"]}
-    return run
-
-
 # ---------------------------------------------------------------- libraries
 
 _libraries = {}
@@ -127,12 +36,34 @@ _libraries_lock = threading.Lock()
 
 
 def library(udid):
-    if not os.path.isdir(os.path.join(core.phone_dir_for(udid), "DCIM")):
+    if not (os.path.isdir(os.path.join(core.phone_dir_for(udid), "DCIM"))
+            or os.path.isfile(os.path.join(upload_dir_for(udid), DEVICE_FILE))):
         abort(404, "No backup for that phone")
     with _libraries_lock:
         if udid not in _libraries:
             _libraries[udid] = Library(udid)
         return _libraries[udid]
+
+
+# A phone backed up by the desktop app (rather than the old rsync'd laptop backup) is described
+# by this file in its upload folder; see backup_register.
+DEVICE_FILE = ".device.json"
+UDID_RE = re.compile(r"[0-9A-Fa-f-]{20,48}")
+
+
+def devices():
+    """Every backed-up phone, most recently backed up first. A phone can have an rsync'd backup
+    (core.backed_up_devices), desktop-app uploads (DEVICE_FILE), or both."""
+    merged = {d["udid"]: d for d in core.backed_up_devices()}
+    root = UPLOADS_ROOT or core.BACKUPS_ROOT
+    for udid in (os.listdir(root) if os.path.isdir(root) else []):
+        extra = core.read_json(os.path.join(upload_dir_for(udid), DEVICE_FILE))
+        if extra:
+            device = merged.setdefault(udid, {"udid": udid})
+            newer = (extra.get("last_sync_at") or "") >= (device.get("last_sync_at") or "")
+            device.update({k: v for k, v in extra.items()
+                           if v is not None and (newer or not k.startswith("last_sync"))})
+    return sorted(merged.values(), key=lambda d: d.get("last_sync_at") or "", reverse=True)
 
 
 _uploads = {}
@@ -149,7 +80,7 @@ def uploads(udid):
 def refresh_libraries():
     """Re-index every backup in the background (only new or changed files are read)."""
     def run():
-        for device in core.backed_up_devices():
+        for device in devices():
             try:
                 library(device["udid"]).refresh()
             except Exception:
@@ -157,74 +88,21 @@ def refresh_libraries():
     threading.Thread(target=run, daemon=True).start()
 
 
-_phone_cache = {"at": 0.0, "value": None}
-_device_names = {}
-
-
-def phone_status():
-    """The connected phone, checked at most every 3 seconds."""
-    if HOSTED:
-        return None
-    if time.monotonic() - _phone_cache["at"] < 3:
-        return _phone_cache["value"]
-    udids = core.connected_udids()
-    value = None
-    if udids:
-        udid = udids[0]
-        paired = core.is_paired(udid)
-        if paired and udid not in _device_names:
-            _device_names[udid] = core.device_info(udid)
-        value = {"udid": udid, "paired": paired, "count": len(udids), **_device_names.get(udid, {})}
-    _phone_cache.update(at=time.monotonic(), value=value)
-    return value
-
-
 # ---------------------------------------------------------------- routes
 
 @app.get("/")
 def index():
-    refresh_libraries()  # pick up changes made outside the app, e.g. a verify run from the terminal
-    return render_template("index.html", sorts=list(SORTS), hosted=HOSTED)
+    refresh_libraries()  # pick up changes made outside the app
+    return render_template("index.html", sorts=list(SORTS))
 
 
 @app.get("/api/status")
 def status():
-    devices = core.backed_up_devices()
-    for device in devices:
+    found = devices()
+    for device in found:
         lib = _libraries.get(device["udid"])
         device["indexing"] = dict(lib.indexing) if lib else None
-    return jsonify(phone=phone_status(), devices=devices, job=jobs.current, remote=REMOTE)
-
-
-@app.post("/api/sync")
-@laptop_only
-def start_sync():
-    if not jobs.start("sync", sync_job):
-        return jsonify(error="A sync is already running"), 409
-    return jsonify(ok=True)
-
-
-@app.post("/api/verify")
-@laptop_only
-def start_verify():
-    if not jobs.start("verify", verify_job):
-        return jsonify(error="A sync is already running"), 409
-    return jsonify(ok=True)
-
-
-@app.post("/api/push/<udid>")
-@laptop_only
-def start_push(udid):
-    if not jobs.start("push", push_job(udid)):
-        return jsonify(error="A sync is already running"), 409
-    return jsonify(ok=True)
-
-
-@app.post("/api/cancel")
-@laptop_only
-def cancel():
-    jobs.cancel.set()
-    return jsonify(ok=True)
+    return jsonify(devices=found)
 
 
 @app.get("/api/<udid>/media")
@@ -258,7 +136,8 @@ def upload_start(udid):
     d = request.get_json(force=True, silent=True) or {}
     try:
         return jsonify(uploads(udid).start(str(d.get("name", "")), int(d.get("size") or 0),
-                                           int(d.get("modified") or 0), str(d.get("fingerprint", ""))))
+                                           int(d.get("modified") or 0), str(d.get("fingerprint", "")),
+                                           phone_path=d.get("phone_path") or None, sha1=d.get("sha1")))
     except (TypeError, ValueError):
         return jsonify(error="Bad upload request"), 400
     except UploadError as e:
@@ -285,6 +164,56 @@ def upload_finish(udid, upload_id):
 @app.get("/api/<udid>/upload/info")
 def upload_info(udid):
     return jsonify(uploads(udid).info())
+
+
+# ---------------------------------------------------------------- desktop app backups
+# The desktop app (desktop/photosync_app) reads the phone over USB and sends new photos here
+# with the upload API above. These routes sit behind the site login like everything else.
+
+def _device_json_path(udid):
+    if not UDID_RE.fullmatch(udid):
+        abort(400, "Bad phone id")
+    return os.path.join(upload_dir_for(udid), DEVICE_FILE)
+
+
+def _update_device(udid, fields):
+    path = _device_json_path(udid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    device = core.read_json(path)
+    device.setdefault("first_synced_at", fields.get("last_sync_at"))
+    device.update({"udid": udid, **fields})
+    core.write_json(path, device)
+    return device
+
+
+@app.post("/api/<udid>/backup/register")
+def backup_register(udid):
+    """Called at the start of every backup: creates the phone's library if it's new."""
+    d = request.get_json(force=True, silent=True) or {}
+    fields = {k: str(d[k])[:100] for k in ("name", "product_type", "ios_version") if d.get(k)}
+    _update_device(udid, {**fields, "last_sync_at": core.now().isoformat(timespec="seconds"),
+                          "last_sync_status": "in_progress"})
+    return jsonify(ok=True)
+
+
+@app.get("/api/<udid>/backup/manifest")
+def backup_manifest(udid):
+    return jsonify(files=uploads(udid).phone_manifest())
+
+
+@app.post("/api/<udid>/backup/finished")
+def backup_finished(udid):
+    d = request.get_json(force=True, silent=True) or {}
+    status = d.get("status")
+    if status not in ("success", "no_changes", "partial", "failed", "interrupted"):
+        status = "failed"
+    fields = {"last_sync_status": status, "last_sync_uploaded": int(d.get("uploaded") or 0),
+              "last_sync_failed": int(d.get("failed") or 0)}
+    if status in ("success", "no_changes"):
+        fields["last_successful_sync_at"] = core.read_json(_device_json_path(udid)).get("last_sync_at")
+    _update_device(udid, fields)
+    threading.Thread(target=library(udid).refresh, daemon=True).start()
+    return jsonify(ok=True)
 
 
 @app.get("/api/<udid>/facets")
@@ -335,13 +264,9 @@ def original(udid, media_id):
 
 
 def main():
-    global REMOTE
-    parser = argparse.ArgumentParser(description="photo-sync web app")
+    parser = argparse.ArgumentParser(description="photo-sync gallery (for local testing)")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--remote", default=core.DEFAULT_REMOTE,
-                        help=f"Where to push backups, as ssh-host:path (default {core.DEFAULT_REMOTE})")
     args = parser.parse_args()
-    REMOTE = args.remote
     refresh_libraries()
     print(f"photo-sync running at http://localhost:{args.port}  (Ctrl-C to stop)")
     app.run(host="127.0.0.1", port=args.port, threaded=True)

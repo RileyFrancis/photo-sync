@@ -8,6 +8,7 @@ APP=/srv/photo-sync/app
 echo "==> Copying code"
 rsync -rt --delete --chmod=D755,F644 \
     --exclude=.git/ --exclude=.venv/ --exclude=__pycache__/ --exclude=err.out --exclude='/~' \
+    --exclude=/desktop/ --exclude=/.github/ --exclude=/auth.txt \
     ./ "$HOST:$APP/"
 
 echo "==> Installing dependencies, checking config, restarting"

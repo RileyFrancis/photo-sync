@@ -13,19 +13,15 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body data-hosted="{{ '1' if hosted else '' }}">
+<body>
   <header class="topbar">
     <div class="brand">Photo Sync</div>
     <select id="device-select" class="device-select" hidden aria-label="Phone backup"></select>
-    {# On the server there's no phone to sync from, so these stay hidden (the script still finds them). #}
-    <div id="phone-pill" class="pill" {% if hosted %}hidden{% endif %}>Checking for phone…</div>
     <div class="spacer"></div>
-    <div id="sync-summary" class="sync-summary" {% if hosted %}hidden{% endif %}></div>
-    <button id="verify-btn" class="btn" title="Re-read every backed-up file from the phone and repair damaged copies" {% if hosted %}hidden{% endif %}>Verify backup</button>
-    <button id="push-btn" class="btn" {% if hosted %}hidden{% endif %}>Push to server</button>
-    <button id="sync-btn" class="btn {% if not hosted %}primary{% endif %}" {% if hosted %}hidden{% endif %}>Sync phone</button>
+    {# When the desktop app last backed up this phone. #}
+    <div id="sync-summary" class="sync-summary"></div>
     <span id="upload-last" class="upload-last muted"></span>
-    <button id="upload-btn" class="btn {% if hosted %}primary{% endif %} upload-btn" disabled>Back up photos</button>
+    <button id="upload-btn" class="btn primary upload-btn" disabled>Back up photos</button>
     <input id="upload-input" type="file" multiple accept="image/*,video/*" hidden>
   </header>
 
@@ -42,21 +38,6 @@
     </div>
     <div id="upload-note" class="upload-note"></div>
     <ul id="upload-log" class="log"></ul>
-  </section>
-
-  <section id="job-panel" class="job-panel" hidden>
-    <div class="job-head">
-      <strong id="job-title">Syncing</strong>
-      <span id="job-stage" class="muted"></span>
-      <div class="spacer"></div>
-      <button id="cancel-btn" class="btn small">Stop</button>
-      <button id="dismiss-btn" class="btn small" hidden>Dismiss</button>
-    </div>
-    <div id="job-progress" class="progress" hidden>
-      <div class="bar"><div id="job-bar-fill" class="fill"></div></div>
-      <div id="job-numbers" class="numbers"></div>
-    </div>
-    <ul id="job-log" class="log"></ul>
   </section>
 
   <section class="toolbar">

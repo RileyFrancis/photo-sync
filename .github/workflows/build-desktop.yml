@@ -1,0 +1,78 @@
+# Builds the Photo Sync desktop app installers:
+#   Windows: PhotoSync-Setup.exe        Linux: PhotoSync-x86_64.AppImage
+# Runs when a tag like desktop-v1.0.0 is pushed (and attaches both files to a GitHub Release),
+# or by hand from the Actions tab (files are then under the run's Artifacts).
+name: Build desktop app
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["desktop-v*"]
+
+permissions:
+  contents: write  # to create the release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: PhotoSync-Setup.exe
+          # The oldest supported Ubuntu, so the AppImage runs on as many distros as possible.
+          - os: ubuntu-22.04
+            artifact: PhotoSync-x86_64.AppImage
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller==6.22.3
+
+      - name: Build app
+        run: pyinstaller --noconfirm packaging/photosync.spec
+
+      - name: Build AppImage
+        if: runner.os == 'Linux'
+        run: sh packaging/build-appimage.sh
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        run: |
+          VERSION=$(python -c "import photosync_app; print(photosync_app.__version__)")
+          choco install innosetup --no-progress -y >/dev/null || true
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DAppVersion=$VERSION" packaging/windows.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: desktop/dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" \
+            --title "Photo Sync ${GITHUB_REF_NAME#desktop-v}" \
+            --notes "Windows: download PhotoSync-Setup.exe and run it. Linux: download PhotoSync-x86_64.AppImage, make it executable (chmod +x) and run it."

@@ -25,6 +25,13 @@ CACHE_ROOT = os.environ.get("PHOTOSYNC_CACHE") or os.path.expanduser("~/.cache/p
 # uploads live in the app's data folder; elsewhere they go in the backup folder's Uploads/.
 UPLOADS_ROOT = os.environ.get("PHOTOSYNC_UPLOADS")
 UPLOADS_PREFIX = "Uploads/"   # indexed paths of uploaded files start with this
+
+
+def upload_dir_for(udid):
+    return (os.path.join(UPLOADS_ROOT, udid) if UPLOADS_ROOT
+            else os.path.join(core.phone_dir_for(udid), UPLOADS_PREFIX.rstrip("/")))
+
+
 INDEX_VERSION = 2  # bump to re-read metadata for every file (2: GPS coordinates)
 
 KINDS = {
@@ -169,8 +176,7 @@ class Library:
     def __init__(self, udid):
         self.udid = udid
         self.phone_dir = core.phone_dir_for(udid)
-        self.upload_dir = (os.path.join(UPLOADS_ROOT, udid) if UPLOADS_ROOT
-                           else os.path.join(self.phone_dir, UPLOADS_PREFIX.rstrip("/")))
+        self.upload_dir = upload_dir_for(udid)
         self.refresh_again = False
         self.cache_dir = os.path.join(CACHE_ROOT, udid)
         for sub in ("thumbs", "view", "video"):

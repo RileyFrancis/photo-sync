@@ -2,7 +2,6 @@
 
 const $ = (id) => document.getElementById(id);
 const PAGE = 200;
-const HOSTED = document.body.dataset.hosted === "1";
 // Sent with every request that changes something (the server refuses them without it).
 const APP_HEADERS = { "X-Photo-Sync": "1" };
 
@@ -16,7 +15,6 @@ const state = {
   generation: 0,       // bumps on every new search so stale responses are ignored
   viewerIndex: -1,
   viewerList: null,    // when set, the viewer steps through this list (a map place) instead of the grid
-  lastJobFinished: null,
   indexVersion: null,  // which index version the gallery shows
 };
 
@@ -547,72 +545,15 @@ function fillSelect(select, allLabel, options, preferred) {
   select.value = options.some((o) => o.name === current) ? current : "";
 }
 
-// ------------------------------------------------------------------ status, sync, push
+// ------------------------------------------------------------------ status
 
-function renderPhone(phone) {
-  const pill = $("phone-pill");
-  pill.className = "pill";
-  if (!phone) pill.textContent = "No phone connected";
-  else if (!phone.paired) { pill.classList.add("warn"); pill.textContent = "Unlock the phone and tap Trust"; }
-  else { pill.classList.add("ok"); pill.textContent = `${phone.name || "iPhone"} connected`; }
-  return phone && phone.paired;
-}
-
-function renderSummary(device, remote) {
+function renderSummary(device) {
   const box = $("sync-summary");
-  if (!device) { box.textContent = `Pushes to ${remote}`; return; }
-  const bad = (s) => s && !["success", "no_changes"].includes(s);
-  box.replaceChildren(
-    el("div", {}, "Last sync ", el("span", { class: bad(device.last_sync_status) ? "bad" : "" },
-      fmtAgo(device.last_sync_at) + (bad(device.last_sync_status) ? ` (${device.last_sync_status})` : ""))),
-    el("div", {}, `Last push to ${(device.remote || remote).split(":")[0]} `, el("span",
-      { class: bad(device.last_push_status) ? "bad" : "" },
-      fmtAgo(device.last_push_at) + (bad(device.last_push_status) ? " (failed)" : ""))),
-  );
-}
-
-function renderJob(job) {
-  const panel = $("job-panel");
-  if (!job) { panel.hidden = true; return; }
-  if (!job.running && state.lastJobFinished === job.finished_at && panel.dataset.dismissed === String(job.finished_at)) return;
-  panel.hidden = false;
-  const pushFailed = job.result && job.result.remote === "failed";
-  const noun = { sync: "Sync", verify: "Verify", push: "Push" }[job.kind];
-  $("job-title").textContent = job.running
-    ? { sync: "Syncing phone", verify: "Verifying backup against the phone", push: "Pushing to server" }[job.kind]
-    : job.error ? `${noun} stopped`
-    : job.kind === "push" ? "Push finished"
-    : pushFailed ? `${noun} finished locally, but the push to the server failed` : `${noun} finished`;
-  $("job-stage").textContent = job.running ? job.stage : "";
-  $("cancel-btn").hidden = !job.running;
-  $("dismiss-btn").hidden = job.running;
-
-  const p = job.progress;
-  $("job-progress").hidden = !p;
-  if (p) {
-    $("job-bar-fill").style.width = `${(p.fraction * 100).toFixed(1)}%`;
-    const parts = [];
-    if (p.phase === "copy" || p.phase === "verify") {
-      if (p.phase === "copy") parts.push(`Attempt ${p.attempt}/${p.max_attempts}`);
-      parts.push(`${fmtNum(p.files_done)} / ${fmtNum(p.total_files)} files`,
-        `${fmtBytes(p.bytes_done)} / ${fmtBytes(p.total_bytes)}`);
-      if (p.mismatched) parts.push(`${fmtNum(p.mismatched)} damaged (will be re-copied)`);
-    } else {
-      parts.push(`${Math.round(p.fraction * 100)}%`, `${fmtNum(p.files_done)} files`, fmtBytes(p.bytes_done));
-    }
-    parts.push(`${fmtBytes(p.speed)}/s`, `${fmtDuration(p.elapsed)} elapsed`,
-      p.eta != null ? `${fmtDuration(p.eta)} left` : "estimating…");
-    if (p.unreadable) parts.push(`${p.unreadable} unreadable (will retry)`);
-    $("job-numbers").textContent = parts.join("  ·  ");
-  }
-
-  const log = $("job-log");
-  const entries = [...job.log];
-  if (job.error) entries.push({ text: job.error, kind: "error" });
-  if (log.childElementCount !== entries.length) {
-    log.replaceChildren(...entries.map((e) => el("li", { class: e.kind }, e.text)));
-    log.scrollTop = log.scrollHeight;
-  }
+  if (!device) { box.replaceChildren(); return; }
+  const bad = (s) => s && !["success", "no_changes", "in_progress"].includes(s);
+  const status = device.last_sync_status;
+  box.replaceChildren(el("div", {}, "Last backup ", el("span", { class: bad(status) ? "bad" : "" },
+    status === "in_progress" ? "running now" : fmtAgo(device.last_sync_at) + (bad(status) ? ` (${status})` : ""))));
 }
 
 function renderDevices(devices) {
@@ -653,7 +594,6 @@ async function poll() {
   try {
     s = await (await fetch("/api/status")).json();
   } catch {
-    $("phone-pill").textContent = "App not running";
     return setTimeout(poll, 3000);
   }
   state.devices = s.devices;
@@ -664,46 +604,17 @@ async function poll() {
   }
   if (!s.devices.length) {
     $("empty").hidden = false;
-    $("empty").textContent = HOSTED ? "No photos yet." : "No backups yet. Connect your phone and press Sync phone.";
+    $("empty").textContent = "No photos yet. Back up a phone with the Photo Sync desktop app, or press Back up photos.";
   }
   renderDevices(s.devices);
   const device = s.devices.find((d) => d.udid === state.udid);
-  const phoneReady = renderPhone(s.phone);
-  renderSummary(device, s.remote);
-  renderJob(s.job);
+  renderSummary(device);
   renderIndexing(device);
 
   $("upload-btn").disabled = !state.udid;
   if (state.udid && state.uploadInfoFor !== state.udid) refreshUploadInfo();
-  const running = s.job && s.job.running;
-  $("sync-btn").disabled = running || !phoneReady;
-  $("sync-btn").title = phoneReady ? "" : "Connect and unlock your phone first";
-  $("verify-btn").disabled = running || !phoneReady || !device;
-  $("push-btn").disabled = running || !device;
-  $("push-btn").title = `Copy the backup to ${s.remote}`;
-  if (s.job && !s.job.running && s.job.finished_at !== state.lastJobFinished) {
-    state.lastJobFinished = s.job.finished_at;
-  }
-  setTimeout(poll, running ? 700 : 2500);
+  setTimeout(poll, 2500);
 }
-
-async function post(url) {
-  const res = await fetch(url, { method: "POST", headers: APP_HEADERS });
-  if (!res.ok) alert((await res.json()).error || "Request failed");
-  delete $("job-panel").dataset.dismissed;
-}
-
-$("sync-btn").onclick = () => post("/api/sync");
-$("verify-btn").onclick = () => {
-  if (confirm("This re-reads every backed-up file from the phone (about as long as a full sync, " +
-              "roughly an hour for ~100 GB) and re-copies any damaged ones. Start now?")) post("/api/verify");
-};
-$("push-btn").onclick = () => state.udid && post(`/api/push/${state.udid}`);
-$("cancel-btn").onclick = () => post("/api/cancel");
-$("dismiss-btn").onclick = () => {
-  $("job-panel").hidden = true;
-  $("job-panel").dataset.dismissed = String(state.lastJobFinished);
-};
 
 // ------------------------------------------------------------------ backing up from this device
 //

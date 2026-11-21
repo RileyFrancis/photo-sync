@@ -69,14 +69,6 @@ button, select, input { font: inherit; color: inherit; }
 .device-select, select, input[type=date] {
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
 }
-.pill {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: 13px;
-}
-.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-.pill.ok { color: var(--text); }
-.pill.ok::before { background: var(--ok); }
-.pill.warn::before { background: var(--warn); }
 .sync-summary { color: var(--muted); font-size: 13px; text-align: right; }
 .sync-summary .bad { color: var(--error); }
 

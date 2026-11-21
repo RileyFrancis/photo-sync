@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Photo Sync
+Comment=Back up your iPhone's photos to your photo server
+Exec=PhotoSync
+Icon=photosync
+Categories=Graphics;Photography;Utility;
+Terminal=false

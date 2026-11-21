@@ -1,0 +1,5 @@
+# Desktop app (Python 3.12). Pinned so installer builds are repeatable.
+pymobiledevice3==11.61.1
+httpx>=0.27,<1
+keyring>=25
+platformdirs>=4
