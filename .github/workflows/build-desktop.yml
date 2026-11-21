@@ -45,14 +45,19 @@ jobs:
 
       - name: Build AppImage
         if: runner.os == 'Linux'
-        run: sh packaging/build-appimage.sh
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq desktop-file-utils  # appimagetool checks the .desktop file with it
+          sh packaging/build-appimage.sh
 
       - name: Build Windows installer
         if: runner.os == 'Windows'
         run: |
           VERSION=$(python -c "import photosync_app; print(photosync_app.__version__)")
           choco install innosetup --no-progress -y >/dev/null || true
-          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DAppVersion=$VERSION" packaging/windows.iss
+          # Stop Git Bash rewriting "/DAppVersion=..." into a Windows path (ISCC options start with /).
+          MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" \
+            "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DAppVersion=$VERSION" packaging/windows.iss
 
       - uses: actions/upload-artifact@v4
         with:

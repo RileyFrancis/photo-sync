@@ -434,7 +434,7 @@ def add_to_app_menu():
         shutil.copyfile(os.path.join(os.path.dirname(__file__), "icon.png"), icon)
         entry = ("[Desktop Entry]\nType=Application\nName=Photo Sync\n"
                  "Comment=Back up your iPhone's photos to your photo server\n"
-                 f'Exec="{appimage}"\nIcon={icon}\nCategories=Graphics;Photography;Utility;\nTerminal=false\n')
+                 f'Exec="{appimage}"\nIcon={icon}\nCategories=Graphics;Photography;\nTerminal=false\n')
         path = os.path.join(share, "applications", "photosync.desktop")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
