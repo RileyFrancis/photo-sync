@@ -418,6 +418,7 @@ function ensureMap() {
   places.map = L.map("map", { worldCopyJump: true, minZoom: 2 }).setView([25, 0], 2);
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
+    referrerPolicy: "strict-origin-when-cross-origin",
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }).addTo(places.map);
   places.cluster = L.markerClusterGroup({
