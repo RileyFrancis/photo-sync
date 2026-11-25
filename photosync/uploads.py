@@ -215,6 +215,14 @@ class Uploads:
         except (OSError, ValueError):
             return {}
 
+    def forget_deleted(self, phone_paths):
+        """Deleted in the gallery: list these phone files as backed up anyway, so the desktop app
+        doesn't send them again."""
+        with self.ledger_lock:
+            ledger = self._ledger()
+            ledger.update(phone_paths)
+            self._write_ledger(ledger)
+
     def _remember(self, phone_path, size):
         """Note that this phone file is backed up even though it isn't stored at its own path."""
         if not phone_path:
@@ -222,10 +230,13 @@ class Uploads:
         with self.ledger_lock:
             ledger = self._ledger()
             ledger[phone_path] = size
-            path = self._ledger_path()
-            with open(path + ".tmp", "w") as f:
-                json.dump(ledger, f)
-            os.replace(path + ".tmp", path)
+            self._write_ledger(ledger)
+
+    def _write_ledger(self, ledger):
+        path = self._ledger_path()
+        with open(path + ".tmp", "w") as f:
+            json.dump(ledger, f)
+        os.replace(path + ".tmp", path)
 
     def find_existing(self, size, fingerprint):
         for path in self.library.paths_with_size(size):

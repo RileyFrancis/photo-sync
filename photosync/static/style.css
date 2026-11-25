@@ -56,6 +56,7 @@ button, select, input { font: inherit; color: inherit; }
 .btn.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
 .btn.small { padding: 4px 10px; font-size: 13px; }
 .btn.ghost { background: transparent; }
+.btn.danger { color: var(--error); }
 
 /* ---------- top bar */
 .topbar {
@@ -132,6 +133,30 @@ button, select, input { font: inherit; color: inherit; }
   background: rgb(0 0 0 / .6); color: #fff; font-size: 11px; font-weight: 600; letter-spacing: .02em;
 }
 .tile .badge.live { left: 6px; right: auto; top: 6px; bottom: auto; }
+.tile .badge.fav { left: 6px; right: auto; background: none; font-size: 15px; line-height: 1; padding: 0;
+  text-shadow: 0 1px 3px rgb(0 0 0 / .7); }
+
+/* ---------- selecting */
+body.selecting .tile img { transition: opacity .2s, transform .15s; }
+body.selecting .tile::after {
+  content: ""; position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid #fff; background: rgb(0 0 0 / .25); box-shadow: 0 1px 3px rgb(0 0 0 / .4);
+}
+body.selecting .tile.selected::after {
+  content: "✓"; display: grid; place-items: center; color: #fff; font-size: 13px; font-weight: 700;
+  background: var(--accent);
+}
+.tile.selected img { transform: scale(.88); border-radius: 4px; }
+.tile.selected { background: var(--surface-2); }
+.select-bar {
+  position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 30;
+  display: flex; align-items: center; gap: 8px; width: min(560px, calc(100% - 32px));
+  padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / .18);
+}
+.select-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+body.selecting .gallery { padding-bottom: 96px; }
+body.map-mode .select-btn { display: none; }
 .tile .broken { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
 .sentinel { height: 1px; }
 
@@ -198,6 +223,7 @@ body.map-mode #gallery, body.map-mode #sentinel, body.map-mode #empty, body.map-
 .v-info dd { margin: 0; word-break: break-word; }
 .v-info .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .v-info .btn { background: #22262d; border-color: #333944; color: #e8eaee; text-decoration: none; }
+.v-info .btn.danger { color: #f87171; }
 
 /* ---------- phones */
 @media (max-width: 700px) {
@@ -219,6 +245,8 @@ body.map-mode #gallery, body.map-mode #sentinel, body.map-mode #empty, body.map-
   .tabs { flex: none; }
   .tabs button { padding: 7px 10px; }
   .filters-btn { display: inline-flex; align-items: center; flex: none; margin-left: auto; }
+  .select-btn { flex: none; }
+  .select-bar { width: calc(100% - 24px); bottom: calc(12px + env(safe-area-inset-bottom)); }
   .filters { display: none; width: 100%; padding: 2px 12px 0; }
   body.filters-open .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .filters .field { display: grid; gap: 2px; font-size: 12px; }

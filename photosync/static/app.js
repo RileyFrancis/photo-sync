@@ -16,6 +16,10 @@ const state = {
   viewerIndex: -1,
   viewerList: null,    // when set, the viewer steps through this list (a map place) instead of the grid
   indexVersion: null,  // which index version the gallery shows
+  totalBytes: 0,
+  selecting: false,    // choosing photos to favorite or delete
+  selected: new Set(), // ids of the chosen photos
+  lastPicked: null,    // index of the last tile tapped while selecting (for shift-click ranges)
 };
 
 // ------------------------------------------------------------------ formatting
@@ -102,6 +106,7 @@ function setKind(kind) {
 // ------------------------------------------------------------------ gallery
 
 function resetGallery() {
+  endSelecting();
   state.generation++;
   state.items = [];
   state.total = 0;
@@ -127,19 +132,42 @@ async function loadMore() {
     const start = state.items.length;
     state.items.push(...data.items);
     state.total = data.total;
+    state.totalBytes = data.total_bytes;
     state.done = state.items.length >= data.total || data.items.length === 0;
-    $("result-count").textContent = `${fmtNum(data.total)} item${data.total === 1 ? "" : "s"} · ${fmtBytes(data.total_bytes)}`;
     renderItems(data.items, start);
-    $("empty").hidden = data.total > 0;
-    if (!data.total) {
-      const f = filters();
-      const filtered = f.ext || f.kind || f.from || f.to || f.camera;
-      $("empty").textContent = filtered ? "Nothing matches these filters." : "No photos indexed yet.";
-    }
+    renderCount();
   } finally {
     if (gen === state.generation) state.loading = false;
   }
   // Keep filling until the sentinel is off screen.
+  if (!state.done && isSentinelVisible()) loadMore();
+}
+
+function renderCount() {
+  $("result-count").textContent = `${fmtNum(state.total)} item${state.total === 1 ? "" : "s"} · ${fmtBytes(state.totalBytes)}`;
+  $("empty").hidden = state.total > 0;
+  if (!state.total) {
+    const f = filters();
+    const filtered = f.ext || f.kind || f.from || f.to || f.camera;
+    $("empty").textContent = f.kind === "favorites" ? "No favorites yet. Use Select to pick some." :
+      filtered ? "Nothing matches these filters." : "No photos indexed yet.";
+  }
+}
+
+// Take these items out of the grid (after deleting them, or unfavoriting them in Favorites)
+// without reloading it, so the page stays where it was.
+function removeFromGallery(ids) {
+  const gone = state.items.filter((it) => ids.has(it.id));
+  if (!gone.length) return;
+  state.items = state.items.filter((it) => !ids.has(it.id));
+  state.total = Math.max(0, state.total - gone.length);
+  state.totalBytes = Math.max(0, state.totalBytes - gone.reduce((n, it) => n + it.size, 0));
+  const y = window.scrollY;
+  resetThumbs();
+  $("gallery").replaceChildren();
+  renderItems(state.items, 0);
+  window.scrollTo(0, y);
+  renderCount();
   if (!state.done && isSentinelVisible()) loadMore();
 }
 
@@ -172,14 +200,119 @@ function renderItems(items, startIndex) {
 
 function tile(item, index, open = (i) => openViewer(i, null)) {
   const img = el("img", { decoding: "async", alt: item.name });
-  const btn = el("button", { class: "tile", title: `${item.name}\n${fmtDate(item.taken_at)}`, onclick: () => open(index) }, img);
+  const btn = el("button", {
+    class: "tile" + (state.selected.has(item.id) ? " selected" : ""),
+    title: `${item.name}\n${fmtDate(item.taken_at)}`,
+    onclick: (e) => state.selecting ? pick(index, e.shiftKey) : open(index),
+  }, img);
+  btn.dataset.id = item.id;
   btn.dataset.thumb = `/thumb/${state.udid}/${item.id}?v=${item.inode}`;
   img.addEventListener("load", () => img.classList.add("loaded"));
   if (item.kind === "video") btn.append(el("span", { class: "badge" }, fmtDuration(item.duration) || "VIDEO"));
   if (item.live_video_id) btn.append(el("span", { class: "badge live" }, "LIVE"));
+  setFavBadge(btn, item.favorite);
   thumbs.observer.observe(btn);
   return btn;
 }
+
+function setFavBadge(tileEl, on) {
+  tileEl.querySelector(".badge.fav")?.remove();
+  if (on) tileEl.append(el("span", { class: "badge fav", "aria-label": "Favorite" }, "♥"));
+}
+function tilesFor(id) { return document.querySelectorAll(`.tile[data-id="${id}"]`); }
+
+// ------------------------------------------------------------------ selecting, favorites, deleting
+
+function startSelecting() {
+  state.selecting = true;
+  document.body.classList.add("selecting");
+  $("select-btn").textContent = "Cancel";
+  $("select-bar").hidden = false;
+  renderSelectBar();
+}
+
+function endSelecting() {
+  state.selecting = false;
+  state.lastPicked = null;
+  for (const id of state.selected) for (const t of tilesFor(id)) t.classList.remove("selected");
+  state.selected.clear();
+  document.body.classList.remove("selecting");
+  $("select-btn").textContent = "Select";
+  $("select-bar").hidden = true;
+}
+
+// Tap a tile to choose it or let it go; shift-click chooses everything since the last one.
+function pick(index, range) {
+  const ids = range && state.lastPicked != null
+    ? state.items.slice(Math.min(index, state.lastPicked), Math.max(index, state.lastPicked) + 1).map((it) => it.id)
+    : [state.items[index].id];
+  const on = range || !state.selected.has(ids[0]);
+  for (const id of ids) {
+    if (on) state.selected.add(id); else state.selected.delete(id);
+    for (const t of tilesFor(id)) t.classList.toggle("selected", on);
+  }
+  state.lastPicked = index;
+  renderSelectBar();
+}
+
+function selectedItems() { return state.items.filter((it) => state.selected.has(it.id)); }
+
+function renderSelectBar() {
+  const items = selectedItems();
+  const n = items.length;
+  $("select-count").textContent = n ? `${fmtNum(n)} selected` : "Tap photos to select them";
+  const allFav = n > 0 && items.every((it) => it.favorite);
+  $("sel-fav").textContent = allFav ? "Unfavorite" : "♥ Favorite";
+  $("sel-fav").dataset.favorite = allFav ? "0" : "1";
+  $("sel-fav").disabled = $("sel-delete").disabled = !n;
+}
+
+// fromViewer: leave the grid's list alone, since the viewer is stepping through it.
+async function setFavorite(items, favorite, { fromViewer = false } = {}) {
+  await apiJSON("POST", `/api/${state.udid}/favorite`, { ids: items.map((it) => it.id), favorite });
+  for (const it of items) {
+    it.favorite = favorite ? 1 : 0;
+    for (const t of tilesFor(it.id)) setFavBadge(t, favorite);
+  }
+  if (!favorite && !fromViewer && filters().kind === "favorites") removeFromGallery(new Set(items.map((it) => it.id)));
+  loadFacets();
+}
+
+// Returns false if the user changed their mind.
+async function deleteItems(items) {
+  const n = items.length;
+  const what = n === 1 ? `"${items[0].name}"` : `${fmtNum(n)} items`;
+  if (!confirm(`Delete ${what} from the server?\n\nThey go to the server's trash and are erased for good ` +
+               `after 30 days. The desktop app won't back them up again.`)) return false;
+  const res = await apiJSON("POST", `/api/${state.udid}/delete`, { ids: items.map((it) => it.id) });
+  state.indexVersion = res.version;  // this page already shows the change; don't reload it
+  // A Live Photo's clip is deleted with its still.
+  const ids = new Set(items.flatMap((it) => [it.id, it.live_video_id].filter(Boolean)));
+  removeFromGallery(ids);
+  loadFacets();
+  return true;
+}
+
+async function runAction(button, fn) {
+  button.disabled = true;
+  try {
+    await fn();
+  } catch (e) {
+    alert(`That didn't work: ${e.message}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("select-btn").onclick = () => (state.selecting ? endSelecting() : startSelecting());
+$("sel-cancel").onclick = endSelecting;
+$("sel-fav").onclick = () => runAction($("sel-fav"), async () => {
+  await setFavorite(selectedItems(), $("sel-fav").dataset.favorite === "1");
+  endSelecting();
+});
+$("sel-delete").onclick = () => runAction($("sel-delete"), async () => {
+  if (await deleteItems(selectedItems())) endSelecting();
+});
 
 // ------------------------------------------------------------------ thumbnail loader
 // Thumbnails are made on demand and can be slow, and the browser only opens a few connections
@@ -337,6 +470,16 @@ function renderInfo(item) {
   ].filter(([, v]) => v);
   const actions = el("div", { class: "actions" },
     el("a", { class: "btn small", href: `/original/${state.udid}/${item.id}` }, "Download original"));
+  if (!item.is_live_video) {
+    actions.append(el("button", {
+      class: "btn small", "aria-pressed": String(!!item.favorite),
+      onclick: (e) => runAction(e.currentTarget, async () => {
+        await setFavorite([item], !item.favorite, { fromViewer: true });
+        if (state.viewerIndex >= 0) renderInfo(item);
+      }),
+    }, item.favorite ? "♥ Favorited" : "♡ Favorite"));
+  }
+  actions.append(el("button", { class: "btn small danger", onclick: (e) => runAction(e.currentTarget, () => deleteFromViewer(item)) }, "Delete"));
   if (item.lat != null) actions.append(el("button", { class: "btn small", onclick: () => showOnMap(item) }, "Show on map"));
   if (item.live_video_id) {
     actions.prepend(el("button", {
@@ -350,6 +493,18 @@ function renderInfo(item) {
     el("dl", {}, rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
     actions,
   );
+}
+
+async function deleteFromViewer(item) {
+  const index = state.viewerIndex;
+  if (!(await deleteItems([item]))) return;
+  if (state.viewerList) {
+    state.viewerList = state.viewerList.filter((it) => it.id !== item.id);
+    if (currentView() === "map") loadPlaces({ fit: false });
+  }
+  const left = viewerItems().length;
+  if (!left && (state.viewerList || state.done)) return closeViewer();
+  openViewer(Math.min(index, Math.max(0, left - 1)));
 }
 
 function closeViewer() {
@@ -381,7 +536,10 @@ $("v-stage").addEventListener("touchend", (e) => {
   else if (dy > 90 && dy > 1.5 * Math.abs(dx)) closeViewer();
 }, { passive: true });
 document.addEventListener("keydown", (e) => {
-  if ($("viewer").hidden) return;
+  if ($("viewer").hidden) {
+    if (e.key === "Escape" && state.selecting) endSelecting();
+    return;
+  }
   if (e.key === "Escape") closeViewer();
   else if (e.key === "ArrowLeft") openViewer(state.viewerIndex - 1);
   else if (e.key === "ArrowRight") openViewer(state.viewerIndex + 1);
@@ -402,6 +560,7 @@ function currentView() { return document.querySelector("#view-tabs .active")?.da
 function setView(view, { load = true } = {}) {
   for (const b of document.querySelectorAll("#view-tabs button")) b.classList.toggle("active", b.dataset.view === view);
   const isMap = view === "map";
+  if (isMap) endSelecting();
   document.body.classList.toggle("map-mode", isMap);
   $("map-view").hidden = !isMap;
   if (load) refreshView();

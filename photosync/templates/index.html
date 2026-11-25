@@ -53,8 +53,10 @@
         <button data-kind="video">Videos</button>
         <button data-kind="live">Live</button>
         <button data-kind="screenshot">Screenshots</button>
+        <button data-kind="favorites">Favorites</button>
       </div>
       </div>
+      <button id="select-btn" class="btn small select-btn">Select</button>
       {# Phones only: the filters below fold away behind this button. #}
       <button id="filters-btn" class="btn small filters-btn" aria-expanded="false" aria-controls="filters">Filters</button>
     </div>
@@ -82,6 +84,15 @@
   <main id="gallery" class="gallery"></main>
   <div id="sentinel" class="sentinel"></div>
   <div id="empty" class="empty" hidden></div>
+
+  {# Shown while choosing photos with Select. #}
+  <div id="select-bar" class="select-bar" hidden>
+    <span id="select-count" class="select-count"></span>
+    <div class="spacer"></div>
+    <button id="sel-fav" class="btn small">Favorite</button>
+    <button id="sel-delete" class="btn small danger">Delete</button>
+    <button id="sel-cancel" class="btn small ghost">Cancel</button>
+  </div>
 
   <section id="map-view" class="map-view" hidden>
     <div id="map" class="map"></div>

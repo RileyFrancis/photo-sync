@@ -1,15 +1,21 @@
 """Searchable index of a phone's backup, plus thumbnails and browser-friendly copies.
 
 Everything here is a cache in ~/.cache/photo-sync/<UDID>/ and can be deleted at any time; it is
-rebuilt from the backup folder. Nothing in the backup itself is modified.
+rebuilt from the backup folder. The only lasting changes come from favoriting and deleting, which
+are kept beside the uploads (see FAVORITES_FILE, REMOVED_FILE and TRASH_DIR) so the cache can
+still be rebuilt.
 """
 
 import datetime
+import errno
+import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import threading
+import time
 from contextlib import closing
 
 import imageio_ffmpeg
@@ -31,6 +37,13 @@ def upload_dir_for(udid):
     return (os.path.join(UPLOADS_ROOT, udid) if UPLOADS_ROOT
             else os.path.join(core.phone_dir_for(udid), UPLOADS_PREFIX.rstrip("/")))
 
+
+# Kept in each phone's upload folder, so they survive the cache being deleted.
+FAVORITES_FILE = ".favorites.json"   # indexed paths of favorited items
+REMOVED_FILE = ".removed.json"       # deleted items the app couldn't move (read-only old backups)
+TRASH_DIR = ".trash"                 # deleted files, one folder per deletion, kept TRASH_DAYS
+TRASH_DAYS = 30
+TRASH_STAMP = "%Y-%m-%dT%H-%M-%S"
 
 INDEX_VERSION = 2  # bump to re-read metadata for every file (2: GPS coordinates)
 
@@ -79,6 +92,7 @@ CREATE TABLE IF NOT EXISTS media (
     lon REAL,
     live_video_id INTEGER,          -- on a Live Photo's still: the id of its motion clip
     is_live_video INTEGER NOT NULL DEFAULT 0,
+    favorite INTEGER NOT NULL DEFAULT 0,  -- copied from FAVORITES_FILE, which is the real record
     index_version INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS media_taken ON media (taken_at);
@@ -168,6 +182,24 @@ def read_metadata(full_path, kind, mtime):
     return meta
 
 
+def _move(src, dest):
+    """Move a file, copying it across disks if need be. Leaves no copy behind if the original
+    can't be removed (e.g. it's in a read-only folder)."""
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    try:
+        os.rename(src, dest)
+        return
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise
+    shutil.copy2(src, dest)
+    try:
+        os.remove(src)
+    except OSError:
+        os.remove(dest)
+        raise
+
+
 # ---------------------------------------------------------------- the library
 
 class Library:
@@ -185,6 +217,7 @@ class Library:
         self.index_lock = threading.Lock()
         self.convert_locks = {}
         self.convert_locks_guard = threading.Lock()
+        self.edit_lock = threading.Lock()  # favoriting and deleting
         self.ffmpeg_slots = threading.Semaphore(max(2, (os.cpu_count() or 4) // 2))
         self.indexing = {"running": False, "done": 0, "total": 0, "error": None,
                          "version": 0}  # bumps whenever the index changes, so pages know to reload
@@ -199,6 +232,10 @@ class Library:
                 db.execute("ALTER TABLE media ADD COLUMN lon REAL")
                 db.execute("UPDATE media SET index_version = 2 WHERE index_version = 1 AND has_location = 0")
                 db.commit()
+            if "favorite" not in {r["name"] for r in db.execute("PRAGMA table_info(media)")}:
+                db.execute("ALTER TABLE media ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+            self._apply_favorites(db)
+            db.commit()
 
     def db(self):
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -229,6 +266,8 @@ class Library:
             self.index_lock.release()
 
     def _refresh(self):
+        self._purge_trash()
+        removed = set(self._read_state(REMOVED_FILE, []))
         on_disk = {}
         for base, prefix in ((os.path.join(self.phone_dir, "DCIM"), "DCIM/"), (self.upload_dir, UPLOADS_PREFIX)):
             for root, dirs, files in os.walk(base):
@@ -238,8 +277,11 @@ class Library:
                     if name.startswith(".") or ext not in KINDS:
                         continue  # rsync temp files, .AAE edit sidecars, etc.
                     full = os.path.join(root, name)
+                    rel = prefix + os.path.relpath(full, base).replace(os.sep, "/")
+                    if rel in removed:
+                        continue
                     st = os.stat(full)
-                    on_disk[prefix + os.path.relpath(full, base)] = (st.st_size, st.st_mtime, st.st_ino)
+                    on_disk[rel] = (st.st_size, st.st_mtime, st.st_ino)
 
         with closing(self.db()) as db:
             known = {r["path"]: r for r in db.execute("SELECT id, path, size, mtime, inode, index_version FROM media")}
@@ -275,6 +317,7 @@ class Library:
             if gone or todo:
                 self.indexing["version"] += 1
                 self._pair_live_photos(db)
+                self._apply_favorites(db)
                 db.commit()
 
     def _pair_live_photos(self, db):
@@ -329,7 +372,9 @@ class Library:
             where.append("lat IS NOT NULL")
         if not include_live_clips:
             where.append("is_live_video = 0")
-        if kind == "live":
+        if kind == "favorites":
+            where.append("favorite = 1")
+        elif kind == "live":
             where.append("live_video_id IS NOT NULL")
         elif kind:
             where.append("kind = ?")
@@ -353,6 +398,8 @@ class Library:
             kinds = {r[0]: r[1] for r in db.execute(
                 "SELECT kind, COUNT(*) FROM media WHERE is_live_video = 0 GROUP BY kind")}
             kinds["live"] = db.execute("SELECT COUNT(*) FROM media WHERE live_video_id IS NOT NULL").fetchone()[0]
+            kinds["favorites"] = db.execute(
+                "SELECT COUNT(*) FROM media WHERE favorite = 1 AND is_live_video = 0").fetchone()[0]
             cameras = [{"name": r[0], "count": r[1]} for r in db.execute(
                 "SELECT camera, COUNT(*) c FROM media WHERE camera IS NOT NULL AND is_live_video = 0 "
                 "GROUP BY camera ORDER BY c DESC")]
@@ -387,6 +434,92 @@ class Library:
                 if not name.startswith(".") and os.path.getsize(full) == size:
                     paths.add(full)
         return paths
+
+    # ------------------------------------------------ favorites and deleting
+
+    def _state_path(self, name):
+        return os.path.join(self.upload_dir, name)
+
+    def _read_state(self, name, default):
+        try:
+            with open(self._state_path(name)) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return default
+
+    def _write_state(self, name, data):
+        os.makedirs(self.upload_dir, exist_ok=True)
+        path = self._state_path(name)
+        with open(path + ".tmp", "w") as f:
+            json.dump(data, f)
+        os.replace(path + ".tmp", path)
+
+    def _apply_favorites(self, db):
+        """Copy FAVORITES_FILE into the index's favorite column."""
+        favorites = self._read_state(FAVORITES_FILE, [])
+        db.execute("UPDATE media SET favorite = 0 WHERE favorite = 1")
+        db.executemany("UPDATE media SET favorite = 1 WHERE path = ?", [(p,) for p in favorites])
+
+    def set_favorite(self, ids, favorite):
+        """Favorite (or unfavorite) these items. Returns how many were changed."""
+        with self.edit_lock, closing(self.db()) as db:
+            paths = [r["path"] for r in db.execute(
+                f"SELECT path FROM media WHERE id IN ({','.join('?' * len(ids))})", ids)] if ids else []
+            favorites = set(self._read_state(FAVORITES_FILE, []))
+            favorites = favorites | set(paths) if favorite else favorites - set(paths)
+            self._write_state(FAVORITES_FILE, sorted(favorites))
+            db.executemany("UPDATE media SET favorite = ? WHERE path = ?", [(int(favorite), p) for p in paths])
+            db.commit()
+        return len(paths)
+
+    def delete(self, ids):
+        """Delete these items, plus a Live Photo's clip with its still. Files are moved to the
+        trash in the upload folder (emptied after TRASH_DAYS); ones that can't be moved (the old
+        read-only backup on the server) are just left out of the gallery from now on.
+        Returns how many files were deleted and {phone path (DCIM/...): size} for them, so the
+        desktop app can be told not to send them again."""
+        if not ids:
+            return 0, {}
+        with self.edit_lock, closing(self.db()) as db:
+            marks = ",".join("?" * len(ids))
+            rows = db.execute(f"SELECT id, path, size FROM media WHERE id IN ({marks}) OR id IN "
+                              f"(SELECT live_video_id FROM media WHERE id IN ({marks}))", ids + ids).fetchall()
+            trash = os.path.join(self.upload_dir, TRASH_DIR, time.strftime(TRASH_STAMP))
+            removed = set(self._read_state(REMOVED_FILE, []))
+            favorites = set(self._read_state(FAVORITES_FILE, []))
+            phone_paths = {}
+            for r in rows:
+                src = self.path_on_disk(r["path"])
+                dest = os.path.join(trash, *r["path"].split("/"))
+                try:
+                    _move(src, dest)
+                except FileNotFoundError:
+                    pass  # already gone
+                except OSError:
+                    removed.add(r["path"])  # read-only: hide it instead
+                favorites.discard(r["path"])
+                phone = r["path"][len(UPLOADS_PREFIX):] if r["path"].startswith(UPLOADS_PREFIX) else r["path"]
+                if phone.startswith("DCIM/"):
+                    phone_paths[phone] = r["size"]
+                db.execute("DELETE FROM media WHERE id = ?", (r["id"],))
+                self._drop_cached(r["id"])
+            self._write_state(REMOVED_FILE, sorted(removed))
+            self._write_state(FAVORITES_FILE, sorted(favorites))
+            self._pair_live_photos(db)
+            db.commit()
+            self.indexing["version"] += 1
+        return len(rows), phone_paths
+
+    def _purge_trash(self):
+        """Permanently remove deletions older than TRASH_DAYS."""
+        root = os.path.join(self.upload_dir, TRASH_DIR)
+        cutoff = datetime.datetime.now() - datetime.timedelta(days=TRASH_DAYS)
+        for name in os.listdir(root) if os.path.isdir(root) else []:
+            try:
+                if datetime.datetime.strptime(name, TRASH_STAMP) < cutoff:
+                    shutil.rmtree(os.path.join(root, name))
+            except (ValueError, OSError):
+                pass
 
     # ------------------------------------------------ derived files
 

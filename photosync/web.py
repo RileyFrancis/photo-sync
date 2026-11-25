@@ -131,6 +131,30 @@ def items(udid):
     return jsonify(items=library(udid).get_many(ids))
 
 
+def _ids(d):
+    ids = d.get("ids")
+    if not isinstance(ids, list) or not ids or len(ids) > 5000 or not all(isinstance(i, int) for i in ids):
+        abort(400, "Bad list of photos")
+    return ids
+
+
+@app.post("/api/<udid>/favorite")
+def favorite(udid):
+    d = request.get_json(force=True, silent=True) or {}
+    return jsonify(changed=library(udid).set_favorite(_ids(d), bool(d.get("favorite"))))
+
+
+@app.post("/api/<udid>/delete")
+def delete(udid):
+    """Moves the photos to the server's trash (emptied after 30 days) and makes sure the desktop
+    app won't back them up again."""
+    d = request.get_json(force=True, silent=True) or {}
+    lib = library(udid)
+    count, phone_paths = lib.delete(_ids(d))
+    uploads(udid).forget_deleted(phone_paths)
+    return jsonify(deleted=count, version=f"{udid}:{lib.indexing['version']}")
+
+
 @app.post("/api/<udid>/upload/start")
 def upload_start(udid):
     d = request.get_json(force=True, silent=True) or {}
