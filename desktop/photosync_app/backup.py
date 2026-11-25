@@ -1,7 +1,7 @@
 """One backup run: read new photos off the phone and send them straight to the server.
 
 Nothing is stored on this computer except a cached copy of the phone's Photos database, used to
-skip hidden photos. Each file is streamed from the phone to the server in 8 MB pieces using the
+skip hidden and recently deleted photos. Each file is streamed from the phone to the server in 8 MB pieces using the
 server's resumable upload API, then checked against the SHA-1 the phone computes for it.
 """
 
@@ -107,10 +107,10 @@ class Backup:
             if empty:
                 self.r.log(f"Skipping {len(empty)} empty file(s) on the phone.", "warn")
             if wanted:
-                hidden = await phone.hidden_paths(wanted, os.path.join(self.cache_dir, udid, "photos-db"),
-                                                  on_stage=self.r.stage)
-                wanted = {p: m for p, m in wanted.items() if p not in hidden}
-                note = f" ({len(hidden):,} hidden skipped)" if hidden else ""
+                excluded = await phone.excluded_paths(wanted, os.path.join(self.cache_dir, udid, "photos-db"),
+                                                      on_stage=self.r.stage)
+                wanted = {p: m for p, m in wanted.items() if p not in excluded}
+                note = f" ({len(excluded):,} hidden or recently deleted skipped)" if excluded else ""
             else:
                 note = ""
             photos = sum(1 for p in listing if posixpath.splitext(p)[1].upper() in KINDS)

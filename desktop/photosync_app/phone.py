@@ -152,12 +152,12 @@ class Phone:
         digest = await self.afc.get_file_hash("/" + path)
         return digest.hex() if len(digest) == 20 else None
 
-    # ------------------------------------------------ hidden photos
+    # ------------------------------------------------ hidden / recently deleted photos
 
-    async def hidden_paths(self, paths, cache_dir, on_stage=None):
-        """Paths among `paths` that belong to items hidden in the Photos app (including a Live
-        Photo's clip and edited copies). Raises PhoneError if that can't be worked out, so a backup
-        never sends hidden photos by accident.
+    async def excluded_paths(self, paths, cache_dir, on_stage=None):
+        """Paths among `paths` that belong to items hidden in the Photos app or sitting in Recently
+        Deleted (including a Live Photo's clip and edited copies). Raises PhoneError if that can't
+        be worked out, so a backup never sends those photos by accident.
 
         The phone's Photos database (often ~1 GB) is cached in cache_dir and only re-read when
         it changes; the write-ahead log (recent changes) is always re-read."""
@@ -179,7 +179,7 @@ class Phone:
                     if cached.st_size == st["st_size"] and int(cached.st_mtime) == int(mtime):
                         continue
                 if on_stage:
-                    on_stage(f"Reading the phone's Photos library to skip hidden photos "
+                    on_stage(f"Reading the phone's Photos library to skip hidden and deleted photos "
                              f"({st['st_size'] / 1e6:,.0f} MB, only needed when it changes)…")
                 await self._pull(src, dst + ".tmp", st["st_size"])
                 os.utime(dst + ".tmp", (mtime, mtime))
@@ -187,12 +187,13 @@ class Phone:
             db_path = os.path.join(cache_dir, "Photos.sqlite")
             # Read-only, so SQLite doesn't fold the log into the cached main file on close.
             with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as db:
-                rows = db.execute("SELECT ZDIRECTORY, ZFILENAME FROM ZASSET WHERE ZHIDDEN = 1").fetchall()
+                rows = db.execute("SELECT ZDIRECTORY, ZFILENAME FROM ZASSET "
+                                  "WHERE ZHIDDEN = 1 OR ZTRASHEDSTATE != 0").fetchall()
         except (OSError, sqlite3.Error, pmd_exc.PyMobileDevice3Exception) as e:
-            raise PhoneError(f"Couldn't read the phone's Photos library to find hidden photos ({explain(e)}). "
-                             f"Stopping so hidden photos aren't backed up by mistake.") from e
-        hidden_keys = {asset_key(f"{d}/{f}") for d, f in rows if d and f}
-        return {p for p in paths if asset_key(p) in hidden_keys}
+            raise PhoneError(f"Couldn't read the phone's Photos library to find hidden and deleted photos ({explain(e)}). "
+                             f"Stopping so they aren't backed up by mistake.") from e
+        excluded_keys = {asset_key(f"{d}/{f}") for d, f in rows if d and f}
+        return {p for p in paths if asset_key(p) in excluded_keys}
 
     async def _pull(self, src, dst, size, chunk=4 << 20):
         handle = await self.afc.fopen(src, "r")

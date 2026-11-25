@@ -6,7 +6,7 @@ straight to the photo server (frantierphotos.duckdns.org). Nothing is saved on t
 - Only photos the server doesn't already have are sent. Running it again is quick.
 - Each file is checked against a fingerprint the iPhone computes itself, so damaged copies are caught and re-sent.
 - If a backup stops (cable pulled, Stop pressed, Wi-Fi drops), the next one carries on where it left off.
-- Photos hidden in the iPhone's Photos app are never sent.
+- Photos that are hidden or in Recently Deleted in the iPhone's Photos app are never sent.
 
 ## Installing
 
