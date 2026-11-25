@@ -16,6 +16,8 @@ const state = {
   viewerIndex: -1,
   viewerList: null,    // when set, the viewer steps through this list (a map place) instead of the grid
   indexVersion: null,  // which index version the gallery shows
+  offset: 0,           // how far through the server's list the gallery has loaded
+  newPending: false,   // the index changed but the grid wasn't reloaded (the user was scrolled down)
   totalBytes: 0,
   selecting: false,    // choosing photos to favorite or delete
   selected: new Set(), // ids of the chosen photos
@@ -109,6 +111,9 @@ function resetGallery() {
   endSelecting();
   state.generation++;
   state.items = [];
+  state.offset = 0;
+  state.newPending = false;
+  $("new-photos").hidden = true;
   state.total = 0;
   state.done = false;
   state.loading = false;
@@ -124,17 +129,22 @@ async function loadMore() {
   if (!state.udid || state.loading || state.done) return;
   state.loading = true;
   const gen = state.generation;
-  const params = new URLSearchParams({ ...filters(), offset: state.items.length, limit: PAGE });
+  const params = new URLSearchParams({ ...filters(), offset: state.offset, limit: PAGE });
   try {
     const res = await fetch(`/api/${state.udid}/media?${params}`);
     const data = await res.json();
     if (gen !== state.generation) return;
     const start = state.items.length;
-    state.items.push(...data.items);
+    state.offset += data.items.length;
+    // While a backup is adding photos, items shift down the list between pages, so a page can
+    // repeat some already shown. Skip those.
+    const shown = new Set(state.items.map((it) => it.id));
+    const fresh = data.items.filter((it) => !shown.has(it.id));
+    state.items.push(...fresh);
     state.total = data.total;
     state.totalBytes = data.total_bytes;
-    state.done = state.items.length >= data.total || data.items.length === 0;
-    renderItems(data.items, start);
+    state.done = state.offset >= data.total || data.items.length === 0;
+    renderItems(fresh, start);
     renderCount();
   } finally {
     if (gen === state.generation) state.loading = false;
@@ -160,6 +170,7 @@ function removeFromGallery(ids) {
   const gone = state.items.filter((it) => ids.has(it.id));
   if (!gone.length) return;
   state.items = state.items.filter((it) => !ids.has(it.id));
+  state.offset = Math.max(0, state.offset - gone.length);
   state.total = Math.max(0, state.total - gone.length);
   state.totalBytes = Math.max(0, state.totalBytes - gone.reduce((n, it) => n + it.size, 0));
   const y = window.scrollY;
@@ -747,11 +758,34 @@ function renderIndexing(device) {
   const version = ix ? `${device.udid}:${ix.version}` : null;
   if (!running && version !== null) {
     if (state.indexVersion != null && state.indexVersion !== version && state.indexVersion.startsWith(device.udid + ":")) {
-      loadFacets(); refreshView({ fit: false });
+      loadFacets();
+      indexChanged();
     }
     state.indexVersion = version;
   }
 }
+
+// New photos arrive one at a time during a backup. Reloading the grid each time would throw the
+// user back to the top, so it only reloads by itself when they're at the top and not busy;
+// otherwise a "New photos" button waits until they ask, or scroll back up.
+function indexChanged() {
+  if (currentView() === "map") return refreshView({ fit: false });
+  state.newPending = true;
+  if (!applyPendingIfIdle()) $("new-photos").hidden = false;
+}
+
+function applyPendingIfIdle() {
+  if (!state.newPending || window.scrollY > 300 || state.selecting || !$("viewer").hidden) return false;
+  resetGallery();
+  return true;
+}
+
+$("new-photos").onclick = () => {
+  if (state.selecting) endSelecting();
+  window.scrollTo(0, 0);
+  resetGallery();
+};
+window.addEventListener("scroll", () => { if (state.newPending) applyPendingIfIdle(); }, { passive: true });
 
 async function poll() {
   let s;
