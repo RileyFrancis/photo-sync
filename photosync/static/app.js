@@ -203,7 +203,11 @@ function tile(item, index, open = (i) => openViewer(i, null)) {
   const btn = el("button", {
     class: "tile" + (state.selected.has(item.id) ? " selected" : ""),
     title: `${item.name}\n${fmtDate(item.taken_at)}`,
-    onclick: (e) => state.selecting ? pick(index, e.shiftKey) : open(index),
+    onclick: (e) => {
+      // Ctrl-click (Cmd-click on a Mac) starts selecting from anywhere, without the Select button.
+      if (!state.selecting && (e.ctrlKey || e.metaKey) && currentView() === "grid") startSelecting();
+      if (state.selecting) pick(index, e.shiftKey); else open(index);
+    },
   }, img);
   btn.dataset.id = item.id;
   btn.dataset.thumb = `/thumb/${state.udid}/${item.id}?v=${item.inode}`;
